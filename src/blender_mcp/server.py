@@ -200,6 +200,15 @@ mcp = FastMCP(
     lifespan=server_lifespan
 )
 
+@mcp.tool()
+def ping(ctx: Context) -> str:
+    """
+    Lightweight health check that does not contact Blender.
+    Returns 'ok' when the MCP server process is up and serving stdio.
+    """
+    return "ok"
+
+
 # Resource endpoints
 
 # Global connection for resources (since resources can't access context)

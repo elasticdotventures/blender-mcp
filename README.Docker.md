@@ -68,7 +68,7 @@ docker-compose up blender-dev blender-mcp
 ### Standalone Docker Run
 
 ```bash
-docker run -i \
+docker run -i --network=host \
   -e BLENDER_HOST=host.docker.internal \
   -e BLENDER_PORT=9876 \
   blender-mcp:latest
