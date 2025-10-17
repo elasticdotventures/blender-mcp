@@ -250,7 +250,6 @@ docker pull ghcr.io/elasticdotventures/blender-mcp:latest
 
 ## Security
 
-- Container runs as non-root user
 - No privileged capabilities required
 - Network access limited to Blender TCP connection
 - SBOM and attestation generated for supply chain security
