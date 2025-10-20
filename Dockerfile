@@ -22,5 +22,5 @@ ENV BLENDER_PORT=9876
 # Expose MCP server port (stdio-based, no port needed)
 # The server communicates via stdin/stdout
 
-# Run the MCP server
-CMD ["python", "-m", "blender_mcp.server"]
+# Run the MCP server via the console script to avoid double-import warnings
+CMD ["blender-mcp"]

@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  blender-mcp:
+    build:
+      context: .
+    environment:
+      BLENDER_HOST: host.docker.internal
+      BLENDER_PORT: 9876
+      VLLM_ENDPOINT: http://vllm:8000/v1/chat/completions
+    volumes:
+      - blender_mcp_settings:/root/.config/blender-mcp
+    depends_on:
+      vllm:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The MCP server communicates over stdio; no ports are exposed.
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    command:
+      [
+        "python",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "${VLLM_MODEL:-deepseek-ai/DeepSeek-OCR}",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--max-model-len",
+        "${VLLM_MAX_MODEL_LEN:-32768}"
+      ]
+    environment:
+      HF_HOME: /models/cache
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${VLLM_MODEL_DIR:-./models}:/models:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # Uncomment to request a single GPU (requires Docker w/ GPU support)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: ["gpu"]
+
+volumes:
+  blender_mcp_settings:
