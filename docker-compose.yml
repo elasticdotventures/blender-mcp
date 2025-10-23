@@ -16,19 +16,16 @@ services:
     # The MCP server communicates over stdio; no ports are exposed.
 
   vllm:
-    build:
-      context: .
-      dockerfile: Dockerfile.vllm
-    image: blender-mcp-vllm:local
+    image: vllm/vllm-openai:v0.8.5.post1
     command:
       - "--model"
-      - "${VLLM_MODEL:-deepseek-ai/DeepSeek-OCR}"
+      - "${VLLM_MODEL:-llava-hf/llava-1.5-7b-hf}"
       - "--host"
       - "0.0.0.0"
       - "--port"
       - "8000"
       - "--max-model-len"
-      - "${VLLM_MAX_MODEL_LEN:-8192}"
+      - "${VLLM_MAX_MODEL_LEN:-2048}"
       - "--gpu-memory-utilization"
       - "0.8"
       - "--trust-remote-code"
@@ -38,10 +35,10 @@ services:
       HF_HOME: /cache/huggingface
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      VLLM_USE_V1: "0"  # LLaVA works better with legacy V0 engine
     ports:
       - "8000:8000"
     volumes:
-      - ${VLLM_MODEL_DIR:-./models}:/models
       - vllm_cache:/cache
     ipc: host
     healthcheck:
