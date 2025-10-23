@@ -21,7 +21,12 @@ import bpy
 # MCP Protocol Version
 MCP_VERSION = "2024-11-05"
 SERVER_NAME = "blender-mcp"
-SERVER_VERSION = "2.0.0"
+
+try:
+    from addon import bl_info as _BL_INFO
+    SERVER_VERSION = ".".join(str(part) for part in _BL_INFO.get("version", (0, 0, 0)))
+except Exception:  # pragma: no cover - fallback when addon is unavailable
+    SERVER_VERSION = "unknown"
 
 
 class MCPStdioServer:
