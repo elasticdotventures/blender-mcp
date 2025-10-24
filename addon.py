@@ -17,6 +17,7 @@ import io
 from contextlib import redirect_stdout, suppress
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
+from typing import Optional
 
 bl_info = {
     "name": "Blender MCP",
@@ -167,6 +168,21 @@ def _get_addon_preferences():
             return prefs
 
     return None
+
+
+def _current_endpoint(scene: Optional[bpy.types.Scene] = None) -> str:
+    if scene and hasattr(scene, "blendermcp_vllm_endpoint"):
+        value = getattr(scene, "blendermcp_vllm_endpoint", "")
+        if value and value.strip():
+            return value.strip()
+
+    settings = _load_settings()
+    return settings.get("vllm", {}).get("endpoint", DEFAULT_VLLM_ENDPOINT)
+
+
+def _normalize_endpoint(value: str) -> str:
+    value = (value or "").strip()
+    return value or DEFAULT_VLLM_ENDPOINT
 
 class BlenderMCPServer:
     def __init__(self, host='localhost', port=9876):
@@ -1852,21 +1868,45 @@ class BLENDERMCPPreferences(bpy.types.AddonPreferences):
         endpoint = settings.get("vllm", {}).get("endpoint", DEFAULT_VLLM_ENDPOINT)
         if not self.vllm_endpoint:
             self.vllm_endpoint = endpoint
-        elif self.vllm_endpoint != endpoint:
-            _update_vllm_settings(endpoint=self.vllm_endpoint)
+        elif _normalize_endpoint(self.vllm_endpoint) != endpoint:
+            endpoint = _normalize_endpoint(self.vllm_endpoint)
+            self.vllm_endpoint = endpoint
+            _update_vllm_settings(endpoint=endpoint)
+        scene = bpy.context.scene
+        if scene and hasattr(scene, "blendermcp_vllm_endpoint"):
+            current = scene.blendermcp_vllm_endpoint or ""
+            if not current.strip():
+                scene.blendermcp_vllm_endpoint = endpoint
 
     def _on_vllm_endpoint_update(self):
-        value = (self.vllm_endpoint or "").strip()
-        if not value:
-            value = DEFAULT_VLLM_ENDPOINT
+        value = _normalize_endpoint(self.vllm_endpoint)
+        if self.vllm_endpoint != value:
             self.vllm_endpoint = value
         _update_vllm_settings(endpoint=value)
         try:
             scene = bpy.context.scene
             if scene and hasattr(scene, "blendermcp_vllm_status"):
                 scene.blendermcp_vllm_status = ""
+            if scene and hasattr(scene, "blendermcp_vllm_endpoint"):
+                scene.blendermcp_vllm_endpoint = value
         except Exception:
             pass
+
+
+def _on_scene_endpoint_update(self, context):
+    endpoint = _normalize_endpoint(self.blendermcp_vllm_endpoint)
+    if self.blendermcp_vllm_endpoint != endpoint:
+        self.blendermcp_vllm_endpoint = endpoint
+        return
+
+    _update_vllm_settings(endpoint=endpoint)
+
+    prefs = _get_addon_preferences()
+    if prefs and getattr(prefs, "vllm_endpoint", None) != endpoint:
+        prefs.vllm_endpoint = endpoint
+
+    if context and context.scene and hasattr(context.scene, "blendermcp_vllm_status"):
+        context.scene.blendermcp_vllm_status = ""
 
 
 class BLENDERMCP_OT_TestVisionLLM(bpy.types.Operator):
@@ -1876,14 +1916,15 @@ class BLENDERMCP_OT_TestVisionLLM(bpy.types.Operator):
 
     def execute(self, context):
         prefs = _get_addon_preferences()
-        if not prefs:
-            self.report({'ERROR'}, "Addon preferences not available.")
-            return {'CANCELLED'}
+        endpoint = _normalize_endpoint(
+            prefs.vllm_endpoint if prefs else _current_endpoint(context.scene)
+        )
 
-        endpoint = (prefs.vllm_endpoint or "").strip()
-        if not endpoint:
-            endpoint = DEFAULT_VLLM_ENDPOINT
+        if prefs and getattr(prefs, "vllm_endpoint", None) != endpoint:
             prefs.vllm_endpoint = endpoint
+
+        if context.scene and hasattr(context.scene, "blendermcp_vllm_endpoint"):
+            context.scene.blendermcp_vllm_endpoint = endpoint
 
         settings = _update_vllm_settings(endpoint=endpoint)
         health_cfg = settings.get("vllm", {}).get("health_check", {})
@@ -1939,16 +1980,15 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
         if scene.blendermcp_use_sketchfab:
             layout.prop(scene, "blendermcp_sketchfab_api_key", text="API Key")
 
-        if prefs:
-            vision_box = layout.box()
-            vision_box.label(text="Vision LLM", icon='VIEW_CAMERA')
-            vision_box.prop(prefs, "vllm_endpoint", text="Endpoint")
-            vision_box.operator("blendermcp.test_vllm", text="Test Vision Server", icon='NETWORK_DRIVE')
+        vision_box = layout.box()
+        vision_box.label(text="Vision LLM", icon='VIEW_CAMERA')
+        vision_box.prop(scene, "blendermcp_vllm_endpoint", text="Endpoint")
+        vision_box.operator("blendermcp.test_vllm", text="Test Vision Server", icon='NETWORK_DRIVE')
 
-            status = scene.blendermcp_vllm_status
-            if status:
-                icon = 'CHECKMARK' if status.startswith("✅") else 'ERROR'
-                vision_box.label(text=status, icon=icon)
+        status = scene.blendermcp_vllm_status
+        if status:
+            icon = 'CHECKMARK' if status.startswith("✅") else 'ERROR'
+            vision_box.label(text=status, icon=icon)
 
         if not scene.blendermcp_server_running:
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
@@ -2066,6 +2106,14 @@ def register():
         default="",
         options={'SKIP_SAVE'}
     )
+    settings = _load_settings()
+    default_endpoint = settings.get("vllm", {}).get("endpoint", DEFAULT_VLLM_ENDPOINT)
+    bpy.types.Scene.blendermcp_vllm_endpoint = bpy.props.StringProperty(
+        name="Vision LLM Endpoint",
+        description="OpenAI-compatible chat completions endpoint used by vision tooling",
+        default=default_endpoint,
+        update=_on_scene_endpoint_update,
+    )
 
     bpy.utils.register_class(BLENDERMCPPreferences)
     bpy.utils.register_class(BLENDERMCP_PT_Panel)
@@ -2075,11 +2123,18 @@ def register():
     bpy.utils.register_class(BLENDERMCP_OT_TestVisionLLM)
 
     prefs = _get_addon_preferences()
+    endpoint_value = default_endpoint
     if prefs:
         prefs.ensure_defaults()
-        _update_vllm_settings(endpoint=prefs.vllm_endpoint or DEFAULT_VLLM_ENDPOINT)
-    else:
-        _update_vllm_settings(endpoint=DEFAULT_VLLM_ENDPOINT)
+        endpoint_value = _normalize_endpoint(prefs.vllm_endpoint)
+        prefs.vllm_endpoint = endpoint_value
+    _update_vllm_settings(endpoint=endpoint_value)
+    try:
+        scene = bpy.context.scene
+        if scene and hasattr(scene, "blendermcp_vllm_endpoint"):
+            scene.blendermcp_vllm_endpoint = endpoint_value
+    except Exception:
+        pass
 
     print("BlenderMCP addon registered")
 
@@ -2104,6 +2159,7 @@ def unregister():
     del bpy.types.Scene.blendermcp_hyper3d_api_key
     del bpy.types.Scene.blendermcp_use_sketchfab
     del bpy.types.Scene.blendermcp_sketchfab_api_key
+    del bpy.types.Scene.blendermcp_vllm_endpoint
     del bpy.types.Scene.blendermcp_vllm_status
 
     print("BlenderMCP addon unregistered")
