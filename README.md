@@ -282,7 +282,7 @@ just vllm-up
 just vllm-logs
 ```
 
-By default `direnv` exports `VLLM_MODEL_DIR=$HOME/.models/llava-hf-llava-1.5-7b-hf`
+By default `direnv` exports `VLLM_MODEL_DIR=$HOME/.models/liuhaotian__llava-v1.5-7b-hf`
 and the compose file mounts that directory at `/models/llava`. Update
 `VLLM_MODEL_DIR` and `VLLM_DTYPE` in `.envrc` if you want to point at a different
 checkpoint or switch precision (for example `VLLM_DTYPE=float32` for CPU runs).
