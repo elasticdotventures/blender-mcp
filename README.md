@@ -262,6 +262,34 @@ Notes
   the Blender addon listens on `9876` (default) and that the host mapping is
   supported on your platform.
 
+#### Local vision model cache
+
+The vLLM container no longer downloads checkpoints from Hugging Face at runtime.
+Instead, pull models onto the host once and mount them into the container:
+
+```bash
+# install the Hugging Face CLI (once)
+UV_CACHE_DIR="$HOME/.cache/uv" UV_TOOL_DIR="$HOME/.local/uv-tools" \
+  uv tool install huggingface_hub[cli]
+
+# download a model to ~/.models (change the repo ID if you prefer another build)
+just hf-download model=liuhaotian/llava-v1.5-7b-hf dest=$HOME/.models/llava-v1.5-7b-hf
+
+# start vLLM with the cached weights
+just vllm-up
+
+# follow logs / health status
+just vllm-logs
+```
+
+By default `direnv` exports `VLLM_MODEL_DIR=$HOME/.models/llava-hf-llava-1.5-7b-hf`
+and the compose file mounts that directory at `/models/llava`. Update
+`VLLM_MODEL_DIR` and `VLLM_DTYPE` in `.envrc` if you want to point at a different
+checkpoint or switch precision (for example `VLLM_DTYPE=float32` for CPU runs).
+
+> **Tip**: The server still requires a compatible GPU for most checkpoints. If
+> you switch to a CPU-only model, update `docker-compose.yml` accordingly.
+
 #### Capabilities
 
 - Get scene and object information 

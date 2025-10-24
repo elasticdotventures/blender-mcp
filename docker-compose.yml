@@ -19,7 +19,7 @@ services:
     image: vllm/vllm-openai:v0.8.5.post1
     command:
       - "--model"
-      - "${VLLM_MODEL:-llava-hf/llava-1.5-7b-hf}"
+      - "${VLLM_MODEL_PATH:-/models/llava}"
       - "--host"
       - "0.0.0.0"
       - "--port"
@@ -30,22 +30,24 @@ services:
       - "0.8"
       - "--trust-remote-code"
       - "--dtype"
-      - "half"
+      - "${VLLM_DTYPE:-half}"
     environment:
       HF_HOME: /cache/huggingface
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       VLLM_USE_V1: "0"  # LLaVA works better with legacy V0 engine
+      HF_TOKEN: ${HF_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
+      - ${VLLM_MODEL_DIR:-./models/llava}:/models/llava
       - vllm_cache:/cache
     ipc: host
     healthcheck:
       test:
         [
           "CMD",
-          "python",
+          "python3",
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
         ]
