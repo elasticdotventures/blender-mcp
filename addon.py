@@ -21,7 +21,7 @@ from urllib.parse import urlparse, urljoin
 bl_info = {
     "name": "Blender MCP",
     "author": "BlenderMCP",
-    "version": (1, 2, 2),
+    "version": (1, 2, 3),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Connect Blender to Claude via MCP",
@@ -143,9 +143,29 @@ def _check_vllm_health(endpoint: str, relative_path: str, timeout: int) -> dict:
 
 
 def _get_addon_preferences():
-    for addon in bpy.context.preferences.addons.values():
-        if addon.module == __name__:
+    addons = bpy.context.preferences.addons
+    candidate_names = {__name__}
+    if __package__:
+        candidate_names.add(__package__)
+        candidate_names.add(__package__.split('.')[0])
+    candidate_names.add(Path(__file__).stem)
+
+    for name in candidate_names:
+        addon = addons.get(name)
+        if addon:
             return addon.preferences
+
+    for addon in addons.values():
+        if addon.module in candidate_names:
+            return addon.preferences
+        if __package__ and addon.module.startswith(__package__):
+            return addon.preferences
+
+    for addon in addons.values():
+        prefs = getattr(addon, "preferences", None)
+        if prefs and hasattr(prefs, "vllm_endpoint"):
+            return prefs
+
     return None
 
 class BlenderMCPServer:
@@ -1807,7 +1827,7 @@ class BlenderMCPServer:
 
 
 class BLENDERMCPPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
+    bl_idname = (__package__ or __name__).split('.')[0]
 
     vllm_endpoint: StringProperty(
         name="Vision LLM Endpoint",
@@ -1902,6 +1922,8 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
         prefs = _get_addon_preferences()
+        if prefs and hasattr(prefs, "ensure_defaults"):
+            prefs.ensure_defaults()
 
         layout.label(text=f"Blender MCP v{ADDON_VERSION}")
         layout.prop(scene, "blendermcp_port")
