@@ -15,11 +15,13 @@ import zipfile
 from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
 import io
 from contextlib import redirect_stdout, suppress
+from pathlib import Path
+from urllib.parse import urlparse, urljoin
 
 bl_info = {
     "name": "Blender MCP",
     "author": "BlenderMCP",
-    "version": (1, 2, 1),
+    "version": (1, 2, 2),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Connect Blender to Claude via MCP",
@@ -33,6 +35,118 @@ RODIN_FREE_TRIAL_KEY = "k9TcfFoEhNd9cCPP2guHAHHHkctZHIRhZDywZ1euGUXwihbYLpOjQhof
 # Add User-Agent as required by Poly Haven API
 REQ_HEADERS = requests.utils.default_headers()
 REQ_HEADERS.update({"User-Agent": "blender-mcp"})
+
+DEFAULT_VLLM_ENDPOINT = "http://localhost:8000/v1/chat/completions"
+DEFAULT_SETTINGS = {
+    "vllm": {
+        "endpoint": DEFAULT_VLLM_ENDPOINT,
+        "models": {
+            "type": "ring",
+            "items": ["deepseek-ocr"],
+            "rotate_on_call": False,
+        },
+        "health_check": {
+            "enabled": True,
+            "relative_path": "/health",
+            "timeout_seconds": 5,
+        },
+    }
+}
+
+
+def _settings_file_path() -> Path:
+    env_override = os.getenv("BLENDER_MCP_SETTINGS_PATH")
+    if env_override:
+        return Path(env_override).expanduser()
+
+    if os.name == "nt":
+        base_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        xdg_config = os.environ.get("XDG_CONFIG_HOME")
+        if xdg_config:
+            base_dir = Path(xdg_config)
+        else:
+            base_dir = Path.home() / ".config"
+
+    return base_dir / "blender-mcp" / "settings.json"
+
+
+def _load_settings() -> dict:
+    path = _settings_file_path()
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            data = {}
+    except json.JSONDecodeError:
+        data = {}
+
+    if "vllm" not in data:
+        data["vllm"] = {}
+
+    vllm = data["vllm"]
+    defaults = DEFAULT_SETTINGS["vllm"]
+    vllm.setdefault("endpoint", defaults["endpoint"])
+    vllm.setdefault("models", defaults["models"])
+    vllm.setdefault("health_check", defaults["health_check"])
+    return data
+
+
+def _save_settings(data: dict) -> None:
+    path = _settings_file_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[Blender MCP] Failed to persist settings: {exc}")
+
+
+def _update_vllm_settings(**kwargs) -> dict:
+    data = _load_settings()
+    vllm = data.setdefault("vllm", {})
+    changed = False
+
+    for key, value in kwargs.items():
+        if value is not None and vllm.get(key) != value:
+            vllm[key] = value
+            changed = True
+
+    if changed:
+        _save_settings(data)
+    return data
+
+
+def _check_vllm_health(endpoint: str, relative_path: str, timeout: int) -> dict:
+    parsed = urlparse(endpoint)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid endpoint URL: {endpoint}")
+
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    health_url = urljoin(base, relative_path or "/health")
+
+    try:
+        response = requests.get(health_url, timeout=timeout)
+        reachable = response.status_code < 500
+        return {
+            "reachable": reachable,
+            "status_code": response.status_code,
+            "reason": response.reason,
+            "url": health_url,
+        }
+    except requests.RequestException as exc:
+        return {
+            "reachable": False,
+            "status_code": None,
+            "reason": str(exc),
+            "url": health_url,
+        }
+
+
+def _get_addon_preferences():
+    for addon in bpy.context.preferences.addons.values():
+        if addon.module == __name__:
+            return addon.preferences
+    return None
 
 class BlenderMCPServer:
     def __init__(self, host='localhost', port=9876):
@@ -1691,6 +1805,91 @@ class BlenderMCPServer:
             return {"error": f"Failed to download model: {str(e)}"}
     #endregion
 
+
+class BLENDERMCPPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    vllm_endpoint: StringProperty(
+        name="Vision LLM Endpoint",
+        description="OpenAI-compatible chat completions endpoint used by vision tooling",
+        default=DEFAULT_VLLM_ENDPOINT,
+        update=lambda self, context: self._on_vllm_endpoint_update(),
+    )
+
+    generic_settings: StringProperty(
+        name="Additional Settings",
+        description="Reserved for future Blender MCP configuration (JSON).",
+        default="",
+        options={'HIDDEN'}
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "vllm_endpoint", text="Vision LLM Endpoint")
+
+    def ensure_defaults(self):
+        settings = _load_settings()
+        endpoint = settings.get("vllm", {}).get("endpoint", DEFAULT_VLLM_ENDPOINT)
+        if not self.vllm_endpoint:
+            self.vllm_endpoint = endpoint
+        elif self.vllm_endpoint != endpoint:
+            _update_vllm_settings(endpoint=self.vllm_endpoint)
+
+    def _on_vllm_endpoint_update(self):
+        value = (self.vllm_endpoint or "").strip()
+        if not value:
+            value = DEFAULT_VLLM_ENDPOINT
+            self.vllm_endpoint = value
+        _update_vllm_settings(endpoint=value)
+        try:
+            scene = bpy.context.scene
+            if scene and hasattr(scene, "blendermcp_vllm_status"):
+                scene.blendermcp_vllm_status = ""
+        except Exception:
+            pass
+
+
+class BLENDERMCP_OT_TestVisionLLM(bpy.types.Operator):
+    bl_idname = "blendermcp.test_vllm"
+    bl_label = "Test Vision Server"
+    bl_description = "Check connectivity to the configured OpenAI-compatible vision endpoint"
+
+    def execute(self, context):
+        prefs = _get_addon_preferences()
+        if not prefs:
+            self.report({'ERROR'}, "Addon preferences not available.")
+            return {'CANCELLED'}
+
+        endpoint = (prefs.vllm_endpoint or "").strip()
+        if not endpoint:
+            endpoint = DEFAULT_VLLM_ENDPOINT
+            prefs.vllm_endpoint = endpoint
+
+        settings = _update_vllm_settings(endpoint=endpoint)
+        health_cfg = settings.get("vllm", {}).get("health_check", {})
+        relative_path = health_cfg.get("relative_path", "/health")
+        timeout = int(health_cfg.get("timeout_seconds", 5))
+
+        try:
+            result = _check_vllm_health(endpoint, relative_path, timeout)
+        except ValueError as exc:
+            context.scene.blendermcp_vllm_status = f"❌ {exc}"
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        if result["reachable"]:
+            message = f"✅ {result['url']} responded ({result['status_code']})"
+            self.report({'INFO'}, message)
+            context.scene.blendermcp_vllm_status = message
+            return {'FINISHED'}
+        else:
+            reason = result.get("reason") or "No response"
+            message = f"❌ Vision server unreachable: {reason}"
+            context.scene.blendermcp_vllm_status = message
+            self.report({'ERROR'}, message)
+            return {'CANCELLED'}
+
+
 # Blender UI Panel
 class BLENDERMCP_PT_Panel(bpy.types.Panel):
     bl_label = "Blender MCP"
@@ -1702,6 +1901,7 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        prefs = _get_addon_preferences()
 
         layout.label(text=f"Blender MCP v{ADDON_VERSION}")
         layout.prop(scene, "blendermcp_port")
@@ -1716,6 +1916,17 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
         layout.prop(scene, "blendermcp_use_sketchfab", text="Use assets from Sketchfab")
         if scene.blendermcp_use_sketchfab:
             layout.prop(scene, "blendermcp_sketchfab_api_key", text="API Key")
+
+        if prefs:
+            vision_box = layout.box()
+            vision_box.label(text="Vision LLM", icon='VIEW_CAMERA')
+            vision_box.prop(prefs, "vllm_endpoint", text="Endpoint")
+            vision_box.operator("blendermcp.test_vllm", text="Test Vision Server", icon='NETWORK_DRIVE')
+
+            status = scene.blendermcp_vllm_status
+            if status:
+                icon = 'CHECKMARK' if status.startswith("✅") else 'ERROR'
+                vision_box.label(text=status, icon=icon)
 
         if not scene.blendermcp_server_running:
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
@@ -1827,11 +2038,26 @@ def register():
         description="API Key provided by Sketchfab",
         default=""
     )
+    bpy.types.Scene.blendermcp_vllm_status = bpy.props.StringProperty(
+        name="Vision Server Status",
+        description="Last recorded status of the vision server connectivity check",
+        default="",
+        options={'SKIP_SAVE'}
+    )
 
+    bpy.utils.register_class(BLENDERMCPPreferences)
     bpy.utils.register_class(BLENDERMCP_PT_Panel)
     bpy.utils.register_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
+    bpy.utils.register_class(BLENDERMCP_OT_TestVisionLLM)
+
+    prefs = _get_addon_preferences()
+    if prefs:
+        prefs.ensure_defaults()
+        _update_vllm_settings(endpoint=prefs.vllm_endpoint or DEFAULT_VLLM_ENDPOINT)
+    else:
+        _update_vllm_settings(endpoint=DEFAULT_VLLM_ENDPOINT)
 
     print("BlenderMCP addon registered")
 
@@ -1845,6 +2071,8 @@ def unregister():
     bpy.utils.unregister_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)
     bpy.utils.unregister_class(BLENDERMCP_OT_StopServer)
+    bpy.utils.unregister_class(BLENDERMCP_OT_TestVisionLLM)
+    bpy.utils.unregister_class(BLENDERMCPPreferences)
 
     del bpy.types.Scene.blendermcp_port
     del bpy.types.Scene.blendermcp_server_running
@@ -1854,6 +2082,7 @@ def unregister():
     del bpy.types.Scene.blendermcp_hyper3d_api_key
     del bpy.types.Scene.blendermcp_use_sketchfab
     del bpy.types.Scene.blendermcp_sketchfab_api_key
+    del bpy.types.Scene.blendermcp_vllm_status
 
     print("BlenderMCP addon unregistered")
 
