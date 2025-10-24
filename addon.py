@@ -21,7 +21,7 @@ from urllib.parse import urlparse, urljoin
 bl_info = {
     "name": "Blender MCP",
     "author": "BlenderMCP",
-    "version": (1, 2, 3),
+    "version": (1, 2, 4),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Connect Blender to Claude via MCP",
